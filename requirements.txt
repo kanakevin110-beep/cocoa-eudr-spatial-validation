@@ -1,0 +1,6 @@
+# Core dependencies (PyQGIS, GDAL, GEOS, PROJ) are provided by QGIS itself.
+# Install QGIS 3.28+ (https://qgis.org) and run from the QGIS Python Console or the OSGeo4W Shell.
+#
+# Planned modules (eudr_checker.py, notification.py) may need:
+# requests
+# africastalking
