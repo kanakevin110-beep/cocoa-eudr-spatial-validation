@@ -140,7 +140,8 @@ def remove_overlaps(plots: dict, cfg: dict | None = None) -> dict:
 def build_layer(plots: dict, attributes: dict | None = None, name="cleaned_plots") -> QgsVectorLayer:
     """In-memory polygon layer (EPSG:4326). attributes: {plot_id: {'area_ha':..., ...}}"""
     layer = QgsVectorLayer("Polygon?crs=EPSG:4326&field=plot_id:string&field=area_ha:double"
-                           "&field=perimeter_m:double&field=consistency:integer", name, "memory")
+                           "&field=perimeter_m:double&field=consistency:integer"
+                           "&field=loss_overlap_pct:double&field=eudr_status:string", name, "memory")
     da = make_distance_area()
     feats = []
     for pid, geom in plots.items():
@@ -148,7 +149,8 @@ def build_layer(plots: dict, attributes: dict | None = None, name="cleaned_plots
         f = QgsFeature(layer.fields())
         f.setGeometry(geom)
         f.setAttributes([pid, round(da.measureArea(geom) / 10_000, 4),
-                         round(da.measurePerimeter(geom), 1), extra.get("consistency")])
+                         round(da.measurePerimeter(geom), 1), extra.get("consistency"),
+                         extra.get("loss_overlap_pct"), extra.get("eudr_status")])
         feats.append(f)
     layer.dataProvider().addFeatures(feats)
     return layer

@@ -5,9 +5,9 @@
 [![QGIS Core](https://img.shields.io/badge/QGIS-3.28%2B-green.svg)](https://qgis.org/)
 [![FOSS4G 2027](https://img.shields.io/badge/FOSS4G-2027--Submission-orange.svg)](https://osgeo.org)
 
-An open-source geospatial toolkit built on **Python and PyQGIS** to clean smallholder cocoa plot polygons, check that the field evidence (GPS track + geotagged photo) is **consistent** with a plot genuinely walked on foot, and prepare EUDR zero-deforestation checks and farmer feedback for cocoa farmers in Cameroon.
+An open-source geospatial toolkit built on **Python and PyQGIS** to clean smallholder cocoa plot polygons, check that the field evidence (GPS track + geotagged photo) is **consistent** with a plot genuinely walked on foot, and screen plots against post-2020 forest loss for EUDR purposes. A farmer-feedback module is planned.
 
-> **Project status:** prototype. Modules marked ✅ are implemented and tested on synthetic data; modules marked 🚧 are planned. See [Section 3](#-3-repository-structure--status).
+> **Project status:** prototype. Modules marked ✅ are implemented and tested on synthetic data; the module marked 🚧 is planned. See [Section 3](#-3-repository-structure--status).
 
 ---
 
@@ -47,19 +47,23 @@ All values are configurable (`DEFAULT_CONFIG` in `src/anti_fraud.py`, or a JSON 
 cocoa-eudr-spatial-validation/
 ├── LICENSE                        # MIT License file
 ├── README.md                      # Project documentation
-├── requirements.txt               # Optional extras (QGIS itself provides the core libraries)
+├── requirements.txt               # Notes on dependencies (QGIS provides the core libraries)
 │
 ├── src/
 │   ├── __init__.py
 │   ├── qgis_env.py                # ✅ Initialises QGIS for standalone use
-│   ├── anti_fraud.py              # ✅ GPX speed + photo EXIF → consistency score
 │   ├── spatial_cleaner.py         # ✅ PyQGIS polygon cleaning & topology repair
-│   ├── eudr_checker.py            # 🚧 Forest-loss intersection & risk scoring
+│   ├── anti_fraud.py              # ✅ GPX speed + photo EXIF → consistency score
+│   ├── eudr_checker.py            # ✅ Forest-loss intersection & risk screening
 │   └── notification.py            # 🚧 SMS / WhatsApp feedback to farmers
+│
+├── scripts/
+│   └── run_pipeline.py            # ✅ Runs steps 1-3 for one plot
 │
 └── data/                          # Synthetic demo data (no real producer data)
     ├── sample_track.gpx           # Demo GPX track
-    └── ground_photo.jpg           # Demo geotagged photo
+    ├── ground_photo.jpg           # Demo geotagged photo
+    └── forest_loss_sample.geojson # Demo forest-loss polygons (2019 and 2022)
 ```
 
 ### Workflow
@@ -70,16 +74,7 @@ cocoa-eudr-spatial-validation/
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  1. CONSISTENCY MODULE  ✅   (anti_fraud.py)                     │
-│   - Walking-speed profile (≤ 4 km/h)                             │
-│   - Survey duration vs. plot perimeter (large plots ≈ 1 h)       │
-│   - Photo EXIF time/position vs. GPX track                       │
-│   → Consistency Score (0-100) + verdict                          │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  2. SPATIAL CLEANING ENGINE  ✅   (spatial_cleaner.py)           │
+│  1. SPATIAL CLEANING ENGINE  ✅   (spatial_cleaner.py)           │
 │   - Duplicate / jitter vertex removal                            │
 │   - Self-intersection repair (QgsGeometry.makeValid)             │
 │   - Coordinate precision normalisation, overlap detection        │
@@ -88,9 +83,18 @@ cocoa-eudr-spatial-validation/
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  3. EUDR SATELLITE CROSS-CHECK  🚧                               │
-│   - Intersection with forest-cover loss after 31 Dec 2020        │
-│   - Deforestation risk % per plot                                │
+│  2. CONSISTENCY MODULE  ✅   (anti_fraud.py)                     │
+│   - Walking-speed profile (≤ 4 km/h)                             │
+│   - Survey duration vs. plot perimeter (large plots ≈ 1 h)       │
+│   - Photo EXIF time/position vs. GPX track                       │
+│   → Consistency Score (0-100) + verdict                          │
+└─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  3. FOREST-LOSS SCREENING  ✅   (eudr_checker.py)                │
+│   - Intersection with forest loss after 31 Dec 2020              │
+│   - Overlap in ha and % of plot → screening status               │
 └─────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -128,7 +132,39 @@ Checks that lack the required data (for example, no perimeter supplied) are left
 
 ---
 
-## 🧰 5. Installation & Prerequisites
+## 🌳 5. Forest-Loss Screening & Overall Decision
+
+`eudr_checker.py` intersects the cleaned plot with a polygon layer of forest loss that **you supply** (for example derived from Global Forest Watch / Hansen data, in any CRS and any vector format QGIS reads). Only loss from **2021 onwards** counts, in line with the EUDR cut-off of 31 December 2020. Overlapping loss polygons are merged first, so no area is counted twice.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `year_field` | `year` | Attribute holding the loss year (4-digit, or Hansen-style 2-digit such as `22`). |
+| `min_year` | `2021` | Earlier loss is ignored. |
+| `min_overlap_ha` | `0.005` | Smaller overlaps are treated as positional noise. |
+| `high_risk_overlap_pct` | `5.0` | Share of the plot above which the status is `HIGH_RISK`. |
+
+| Status | Meaning |
+|---|---|
+| `NO_LOSS_DETECTED` | No post-2020 loss overlaps the plot. |
+| `REVIEW` | A small overlap exists; check with satellite imagery. |
+| `HIGH_RISK` | Overlap at or above the threshold; investigate before the plot enters the supply chain. |
+
+> ⚠️ **This is screening, not a legal compliance decision.** Forest-loss layers also capture shade-tree removal, harvests and fires, so a flag does not prove deforestation, and the absence of a flag does not prove compliance. A person must review every flagged plot.
+
+`run_pipeline.py` combines the steps into one **overall outcome**:
+
+| Outcome | When |
+|---|---|
+| `RESURVEY_RECOMMENDED` | The plot could not be built, or the consistency verdict is `INCONSISTENT`. |
+| `HIGH_RISK` | Forest-loss status is `HIGH_RISK`. |
+| `MANUAL_REVIEW` | Consistency verdict or forest-loss status is `REVIEW`, or any warning was raised. |
+| `PASSED_SCREENING` | Consistent evidence and no post-2020 loss detected. |
+
+None of these outcomes is an automatic approval: they decide what a supervisor looks at next.
+
+---
+
+## 🧰 6. Installation & Prerequisites
 
 ### Prerequisites
 * **QGIS 3.28 LTS or newer.** It bundles Python, PyQGIS, GDAL, GEOS and PROJ. No other dependency is required for the implemented modules.
@@ -138,22 +174,24 @@ Checks that lack the required data (for example, no perimeter supplied) are left
 import sys
 sys.path.append(r"C:\path\to\cocoa-eudr-spatial-validation")
 
+from src.spatial_cleaner import read_gpx_points, clean_polygon, build_layer, add_to_project
 from src.anti_fraud import verify_consistency
-from src.spatial_cleaner import (read_gpx_points, clean_polygon,
-                                 build_layer, add_to_project)
+from src.eudr_checker import load_loss_layer, check_plot
 
-pts = read_gpx_points(r"C:\path\to\data\sample_track.gpx")
-plot = clean_polygon([(x, y) for x, y, _ in pts])
-print(plot["report"])
+gpx   = r"C:\path\to\data\sample_track.gpx"
+photo = r"C:\path\to\data\ground_photo.jpg"
+loss  = r"C:\path\to\data\forest_loss_sample.geojson"
 
-report = verify_consistency(r"C:\path\to\data\sample_track.gpx",
-                            r"C:\path\to\data\ground_photo.jpg",
-                            plot_perimeter_m=plot["report"]["perimeter_m"],
-                            cfg={"photo_default_utc_offset_h": 1})   # Cameroon = UTC+1
-print(report["consistency_score"], report["verdict"])
+plot = clean_polygon([(x, y) for x, y, _ in read_gpx_points(gpx)])
+cons = verify_consistency(gpx, photo, plot["report"]["perimeter_m"],
+                          cfg={"photo_default_utc_offset_h": 1})   # Cameroon = UTC+1
+eudr = check_plot(plot["geometry"], load_loss_layer(loss))
 
+print(plot["report"]); print(cons["consistency_score"], cons["verdict"]); print(eudr["status"])
 add_to_project(build_layer({"plot_1": plot["geometry"]},
-                           {"plot_1": {"consistency": report["consistency_score"]}}))
+                           {"plot_1": {"consistency": cons["consistency_score"],
+                                       "loss_overlap_pct": eudr["overlap_pct"],
+                                       "eudr_status": eudr["status"]}}))
 ```
 
 ### Option B: standalone (command line)
@@ -163,51 +201,56 @@ On Windows, open the **OSGeo4W Shell** installed with QGIS, then:
 git clone https://github.com/kanakevin110-beep/cocoa-eudr-spatial-validation.git
 cd cocoa-eudr-spatial-validation
 
-python src/spatial_cleaner.py --gpx data/sample_track.gpx --out cleaned_plot.gpkg
-python src/anti_fraud.py --gpx data/sample_track.gpx --photo data/ground_photo.jpg --perimeter-m 795
+python scripts/run_pipeline.py \
+  --gpx data/sample_track.gpx \
+  --photo data/ground_photo.jpg \
+  --forest-layer data/forest_loss_sample.geojson \
+  --plot-id DEMO-001 \
+  --out results/DEMO-001.gpkg \
+  --report results/DEMO-001.json
 ```
+
+Each module can also be run on its own: `python src/spatial_cleaner.py`, `python src/anti_fraud.py`, `python src/eudr_checker.py` (add `--help` for options).
 
 ---
 
-## 🚀 6. Example Output
+## 🚀 7. Example Output
 
-Illustrative output on the synthetic demo data (a ~4 ha square plot walked in 25 minutes):
+Output of `run_pipeline.py` on the synthetic demo data (a ~4 ha square plot walked in 25 minutes):
 
 ```text
-$ python src/spatial_cleaner.py --gpx data/sample_track.gpx --out cleaned_plot.gpkg
-{
-  "input_vertices": 151,
-  "vertices_after_dedup": 151,
-  "was_valid": true,
-  "area_ha": 3.978,
-  "perimeter_m": 794.8,
-  "is_valid": true
-}
-Saved cleaned_plot.gpkg
-
-$ python src/anti_fraud.py --gpx data/sample_track.gpx --photo data/ground_photo.jpg --perimeter-m 795
-{
-  "consistency_score": 100,
-  "verdict": "CONSISTENT",
-  "speed":  { "limit_kmh": 4.0, "max_kmh": 1.92, "duration_min": 25.0, "min_expected_min": 9.5 },
-  "photo":  { "distance_to_track_m": 2.3, ... },
-  ...
-}
+[INFO] Starting validation pipeline for plot DEMO-001
+[STEP 1/3] Cleaning & repairing plot boundary...
+  --> Vertices: 151 -> 151
+  --> Area: 3.978 ha | Perimeter: 794.8 m
+[STEP 2/3] Checking field-evidence consistency...
+  --> Speed: max 1.92 km/h (limit 4.0) | duration 25.0 min
+  --> Photo distance to track: 2.3 m
+  --> CONSISTENCY SCORE: 100/100 (CONSISTENT)
+[STEP 3/3] Screening against forest loss after 31 Dec 2020...
+  --> Overlap: 0.0 ha (0.0% of plot)
+  --> SCREENING STATUS: NO_LOSS_DETECTED
+[RESULT] PASSED_SCREENING  (screening only: a person makes the final decision)
+[INFO] Plot saved to results/DEMO-001.gpkg
+[INFO] Report saved to results/DEMO-001.json
 ```
 
-The same track replayed at 10× speed (≈ 19 km/h, e.g. on a motorbike) fails the walking-speed check, and the score drops accordingly.
+Notes on the demo data:
+* `forest_loss_sample.geojson` contains a **2019** loss polygon inside the plot; it is ignored because it predates the cut-off. A 2022 polygon lies far from the plot.
+* With a 2022 loss polygon covering part of the plot (0.74 ha, 18.5 % of the plot), the status becomes `HIGH_RISK`.
+* The same track replayed about 10× faster (≈ 19 km/h) fails the walking-speed and duration checks, and the score falls to 60/100 (`REVIEW`).
 
-> Pass `--config settings.json` to override thresholds, e.g. `{"photo_default_utc_offset_h": 1}` when the camera has no GPS time and stores local time (Cameroon is UTC+1).
+> Pass `--config settings.json` to override thresholds, and `--utc-offset 1` (the default) when the camera has no GPS time and stores local time (Cameroon is UTC+1).
 
 ---
 
-## 🔒 7. Data Protection
+## 🔒 8. Data Protection
 
 Plot coordinates, farmer names and phone numbers are personal data. This public repository contains **only synthetic demonstration data**. Never commit real producer data.
 
 ---
 
-## 📄 8. Open Source License & FOSS4G / OSGeo Contribution
+## 📄 9. Open Source License & FOSS4G / OSGeo Contribution
 
 Distributed under the **MIT License**. See `LICENSE` for more information.
 
